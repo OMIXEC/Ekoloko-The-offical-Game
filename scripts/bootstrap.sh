@@ -41,6 +41,7 @@ mkdir -p "$ROOT/backend/server/src/http" "$ROOT/backend/server/src/protocol" "$R
 cp "$ROOT/glue/SessionToken.ts" "$ROOT/backend/server/src/http/SessionToken.ts"
 cp "$ROOT/glue/ProtocolBridge.ts" "$ROOT/backend/server/src/protocol/ProtocolBridge.ts"
 cp "$ROOT/glue/admin/"*.ts "$ROOT/backend/server/src/admin/"
+cp "$ROOT/glue/server/package.json" "$ROOT/glue/server/package-lock.json" "$ROOT/glue/server/tsconfig.json" "$ROOT/backend/server/"
 
 echo "==> installing dependencies"
 (cd "$ROOT/backend/server" && "$NPM_BIN" ci --no-audit --no-fund)

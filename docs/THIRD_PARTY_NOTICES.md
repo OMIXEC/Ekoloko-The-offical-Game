@@ -14,7 +14,7 @@ Copyright in the Flash client, its artwork, sounds and text remains with the ori
 
 ## What is committed here
 
-- Original code written for this consolidation: `admin/cli.js`, `glue/*` (protocol bridge, session token and admin server modules), `scripts/*`, `tests/*`, `docs/*`, `README.md`, `GLOSSARY.md`.
+- Original code written for this consolidation: `admin/cli.js`, `glue/*` (protocol bridge, session token, admin server modules and server manifests), `scripts/*`, `tests/*`, `docs/*`, `README.md`, `GLOSSARY.md`.
 - Patches against the pinned upstream commits: `patches/*.patch`.
 - Deployment and CI configuration: `.github/`, `terraform/`, `docker/`, `docker-compose.yml`, `.env.example`, `.dockerignore`, `.gitignore`.
 - The repository's MIT `LICENSE` applies only to the original work in this repository, not to the vendored upstream assets.
