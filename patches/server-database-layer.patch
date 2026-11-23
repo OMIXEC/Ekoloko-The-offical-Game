@@ -1,0 +1,937 @@
+diff --git a/server/src/database/Database.ts b/server/src/database/Database.ts
+new file mode 100644
+index 0000000..7ce6184
+--- /dev/null
++++ b/server/src/database/Database.ts
+@@ -0,0 +1,494 @@
++/**
++ * Local compatibility data layer for the preservation server.
++ *
++ * The upstream repo imports `../database/Database` from every extension but
++ * does not ship the file. This implementation restores the data access surface
++ * using the schema created in `src/index.ts` plus the extra tables/columns the
++ * extension handlers expect. It is intentionally conservative: simple
++ * synchronous better-sqlite3 statements, no ORM.
++ */
++import SqliteDatabase from "better-sqlite3";
++import * as fs from "fs";
++import * as path from "path";
++
++type Row = any;
++
++export class Database {
++  private db: SqliteDatabase.Database;
++
++  constructor(filePath?: string) {
++    const target = filePath ?? path.resolve(__dirname, "../../database/ekoloko.db");
++    fs.mkdirSync(path.dirname(target), { recursive: true });
++    this.db = new SqliteDatabase(target);
++    this.db.pragma("journal_mode = WAL");
++    this.db.pragma("foreign_keys = ON");
++    this.ensureSchema();
++  }
++
++  // ── generic access ────────────────────────────────────────────────────
++  prepare(sql: string): SqliteDatabase.Statement {
++    return this.db.prepare(sql);
++  }
++
++  exec(sql: string): this {
++    this.db.exec(sql);
++    return this;
++  }
++
++  pragma(name: string, options?: any): any {
++    return this.db.pragma(name, options as any);
++  }
++
++  close(): void {
++    this.db.close();
++  }
++
++  all<T = Row>(sql: string, ...params: any[]): T[] {
++    return this.db.prepare(sql).all(...params) as T[];
++  }
++
++  private get(sql: string, ...params: any[]): Row {
++    return this.db.prepare(sql).get(...params) as Row;
++  }
++
++  private run(sql: string, ...params: any[]): void {
++    this.db.prepare(sql).run(...params);
++  }
++
++  private addColumn(table: string, column: string, definition: string): void {
++    try {
++      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
++    } catch (error) {
++      const message = String((error as Error).message);
++      if (!message.includes("duplicate column")) throw error;
++    }
++  }
++
++  /** Reconcile the schema created in index.ts with what extensions query. */
++  private ensureSchema(): void {
++    this.db.exec(`
++      CREATE VIEW IF NOT EXISTS accounts AS
++        SELECT id, username, email, password_hash, gender,
++               is_moderator AS mod_level, ranger_level, is_banned, ban_reason, created_at
++        FROM users;
++
++      CREATE VIEW IF NOT EXISTS players AS
++        SELECT id AS account_id, id, username, coins AS gold, credits, xp, level,
++               skin_tone, last_room_id, days_played, premium, ranger_level
++        FROM users;
++
++      CREATE TABLE IF NOT EXISTS rooms (
++        id INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT '', swf_file TEXT NOT NULL DEFAULT '',
++        sound_file TEXT DEFAULT '', zone_name TEXT DEFAULT '', max_users INTEGER NOT NULL DEFAULT 50
++      );
++      CREATE TABLE IF NOT EXISTS room_portals (
++        id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, portal_id INTEGER NOT NULL,
++        target_room_id INTEGER NOT NULL
++      );
++      CREATE TABLE IF NOT EXISTS room_npcs (
++        id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, npc_id INTEGER NOT NULL
++      );
++      CREATE TABLE IF NOT EXISTS stores (
++        id INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT '', store_type TEXT DEFAULT 'general',
++        items_json TEXT NOT NULL DEFAULT '[]'
++      );
++      CREATE TABLE IF NOT EXISTS houses (
++        player_id INTEGER PRIMARY KEY, type_id INTEGER NOT NULL DEFAULT 1,
++        size INTEGER NOT NULL DEFAULT 1, electric_level INTEGER NOT NULL DEFAULT 0,
++        garden_level INTEGER NOT NULL DEFAULT 0, locked INTEGER NOT NULL DEFAULT 0,
++        furniture TEXT NOT NULL DEFAULT '[]'
++      );
++      CREATE TABLE IF NOT EXISTS house_items (
++        id INTEGER PRIMARY KEY AUTOINCREMENT, player_id INTEGER NOT NULL, item_id INTEGER NOT NULL,
++        item_type INTEGER DEFAULT 0, tile_x INTEGER DEFAULT 0, tile_y INTEGER DEFAULT 0, placed INTEGER DEFAULT 1
++      );
++      CREATE TABLE IF NOT EXISTS house_plants (
++        id INTEGER PRIMARY KEY AUTOINCREMENT, player_id INTEGER NOT NULL, plant_id INTEGER NOT NULL,
++        tile INTEGER DEFAULT 0, state TEXT DEFAULT 'growing', planted_at INTEGER NOT NULL
++      );
++      CREATE TABLE IF NOT EXISTS storage_items (
++        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, item_id INTEGER NOT NULL,
++        quantity INTEGER DEFAULT 1, added_at INTEGER NOT NULL
++      );
++      CREATE TABLE IF NOT EXISTS recycle_items (
++        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, item_id INTEGER NOT NULL,
++        quantity INTEGER DEFAULT 1, added_at INTEGER NOT NULL
++      );
++      CREATE TABLE IF NOT EXISTS potions (
++        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, potion_id INTEGER NOT NULL,
++        quantity INTEGER DEFAULT 1, added_at INTEGER NOT NULL
++      );
++      CREATE TABLE IF NOT EXISTS bans (
++        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, reason TEXT DEFAULT '',
++        banned_by INTEGER, created_at INTEGER NOT NULL
++      );
++      CREATE TABLE IF NOT EXISTS daily_rewards (
++        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, day TEXT NOT NULL,
++        claimed INTEGER DEFAULT 0, data TEXT DEFAULT '{}', UNIQUE(user_id, day)
++      );
++      CREATE TABLE IF NOT EXISTS high_scores (
++        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, game_id INTEGER NOT NULL,
++        score INTEGER NOT NULL, period TEXT DEFAULT 'daily', played_at INTEGER NOT NULL
++      );
++      CREATE TABLE IF NOT EXISTS buddy_requests (
++        user_id INTEGER NOT NULL, buddy_id INTEGER NOT NULL, created_at INTEGER NOT NULL,
++        PRIMARY KEY (user_id, buddy_id)
++      );
++    `);
++
++    // Columns the extension handlers read but the index.ts schema omitted.
++    this.addColumn("users", "credits", "INTEGER NOT NULL DEFAULT 0");
++    this.addColumn("users", "skin_tone", "TEXT NOT NULL DEFAULT '1'");
++    this.addColumn("users", "last_room_id", "INTEGER NOT NULL DEFAULT -1");
++    this.addColumn("user_items", "item_type", "INTEGER NOT NULL DEFAULT 0");
++    this.addColumn("user_items", "item_ordinal", "INTEGER NOT NULL DEFAULT 0");
++    this.addColumn("user_items", "slot_id", "INTEGER NOT NULL DEFAULT 0");
++    this.addColumn("user_animals", "days_left", "INTEGER NOT NULL DEFAULT 30");
++    this.addColumn("user_animals", "cleanliness", "INTEGER NOT NULL DEFAULT 100");
++    this.addColumn("user_cards", "series_id", "INTEGER NOT NULL DEFAULT 0");
++    this.addColumn("user_cards", "album_id", "INTEGER NOT NULL DEFAULT 0");
++    this.addColumn("user_quests", "stage", "INTEGER NOT NULL DEFAULT 0");
++    this.addColumn("user_quests", "completed", "INTEGER NOT NULL DEFAULT 0");
++
++    // Static world data. Seed only when empty so deployments keep their edits.
++    const hasRealRoom = this.get("SELECT 1 AS ok FROM rooms WHERE id >= 101 LIMIT 1") as Row | undefined;
++    if (!hasRealRoom) {
++      const staticRooms = path.resolve(__dirname, "../../static-data/S_ROOMS_DATA.json");
++      if (fs.existsSync(staticRooms)) {
++        try {
++          const parsed = JSON.parse(fs.readFileSync(staticRooms, "utf8")) as {
++            rooms?: Array<{ id: number; name: string; swf: string; zone: number; maxUsers: number; portals?: number[] }>;
++          };
++          const insertRoom = this.db.prepare(
++            "INSERT OR REPLACE INTO rooms (id, name, swf_file, sound_file, zone_name, max_users) VALUES (?, ?, ?, '', ?, ?)"
++          );
++          const insertPortal = this.db.prepare(
++            "INSERT INTO room_portals (room_id, portal_id, target_room_id) VALUES (?, ?, ?)"
++          );
++          this.run("DELETE FROM room_portals");
++          for (const room of parsed.rooms ?? []) {
++            insertRoom.run(room.id, room.name, room.swf, `Zone ${room.zone}`, room.maxUsers ?? 40);
++            for (const target of room.portals ?? []) {
++              insertPortal.run(room.id, target, target);
++            }
++          }
++        } catch (error) {
++          console.error("[DB] Could not seed rooms from static data:", (error as Error).message);
++        }
++      }
++      if (((this.get("SELECT COUNT(*) AS n FROM rooms") as Row).n as number) === 0) {
++        this.run("INSERT INTO rooms (id, name, swf_file, sound_file, zone_name, max_users) VALUES (1, 'Channel1', 'room1', '', 'Ekoloko', 100)");
++      } else {
++        // Drop the old placeholder channel once real world rooms exist.
++        this.run("DELETE FROM rooms WHERE id = 1 AND name = 'Channel1'");
++      }
++    }
++  }
++
++  // ── accounts and players ──────────────────────────────────────────────
++  getAccountByUsername(username: string): Row {
++    return this.get("SELECT * FROM accounts WHERE username = ? COLLATE NOCASE", username);
++  }
++
++  getAccountById(id: number): Row {
++    return this.get("SELECT * FROM accounts WHERE id = ?", id);
++  }
++
++  getPlayerData(userId: number): Row {
++    return this.get("SELECT * FROM players WHERE account_id = ?", userId);
++  }
++
++  getFullPlayerProfile(userId: number): Row {
++    const account = this.getAccountById(userId);
++    if (!account) return undefined;
++    const player = this.getPlayerData(userId);
++    return { account, player, equippedItems: this.getEquippedItems(userId) };
++  }
++
++  createAccount(username: string, passwordHash: string, email: string, gender = "male"): number {
++    const result = this.db
++      .prepare("INSERT INTO users (username, password_hash, email, gender, created_at) VALUES (?, ?, ?, ?, ?)")
++      .run(username, passwordHash, email, gender, Date.now());
++    return Number(result.lastInsertRowid);
++  }
++
++  updateLastLogin(userId: number): void {
++    this.run("UPDATE users SET last_login = ? WHERE id = ?", Date.now(), userId);
++  }
++
++  updatePlayerGold(userId: number, delta: number): void {
++    this.run("UPDATE users SET coins = coins + ? WHERE id = ?", delta, userId);
++  }
++
++  updatePlayerCredits(userId: number, delta: number): void {
++    this.run("UPDATE users SET credits = credits + ? WHERE id = ?", delta, userId);
++  }
++
++  updatePlayerLevel(userId: number, level: number): void {
++    this.run("UPDATE users SET level = ? WHERE id = ?", level, userId);
++  }
++
++  updatePlayerLastRoom(userId: number, roomId: number): void {
++    this.run("UPDATE users SET last_room_id = ? WHERE id = ?", roomId, userId);
++  }
++
++  // ── inventory ─────────────────────────────────────────────────────────
++  getInventory(userId: number): Row[] {
++    return this.all("SELECT id, item_id, item_type, item_ordinal, slot_id, equipped FROM user_items WHERE user_id = ?", userId);
++  }
++
++  getInventoryItemById(inventoryId: number, userId?: number): Row {
++    return userId === undefined
++      ? this.get("SELECT * FROM user_items WHERE id = ?", inventoryId)
++      : this.get("SELECT * FROM user_items WHERE id = ? AND user_id = ?", inventoryId, userId);
++  }
++
++  getEquippedItems(userId: number): Row[] {
++    return this.all("SELECT id, item_id, item_type, slot_id FROM user_items WHERE user_id = ? AND equipped = 1", userId);
++  }
++
++  hasItem(userId: number, itemId: number): boolean {
++    return Boolean(this.get("SELECT 1 AS ok FROM user_items WHERE user_id = ? AND item_id = ?", userId, itemId));
++  }
++
++  addInventoryItem(userId: number, itemId: number, itemType = 0, slotId = 0): void {
++    this.run(
++      "INSERT INTO user_items (user_id, item_id, item_type, slot_id, quantity, obtained_at) VALUES (?, ?, ?, ?, 1, ?)",
++      userId, itemId, itemType, slotId, Date.now()
++    );
++  }
++
++  removeInventoryItem(userId: number, inventoryId: number): void {
++    this.run("DELETE FROM user_items WHERE user_id = ? AND id = ?", userId, inventoryId);
++  }
++
++  removeInventoryItemByItemId(userId: number, itemId: number): void {
++    this.run("DELETE FROM user_items WHERE user_id = ? AND item_id = ? AND id IN (SELECT id FROM user_items WHERE user_id = ? AND item_id = ? LIMIT 1)", userId, itemId, userId, itemId);
++  }
++
++  equipItem(userId: number, inventoryId: number, slotId = 0): void {
++    this.run("UPDATE user_items SET equipped = 1, slot_id = ? WHERE user_id = ? AND id = ?", slotId, userId, inventoryId);
++  }
++
++  unequipItem(userId: number, inventoryId: number): void {
++    this.run("UPDATE user_items SET equipped = 0 WHERE user_id = ? AND id = ?", userId, inventoryId);
++  }
++
++  addStorageItem(userId: number, itemId: number, itemType = 0, itemOrdinal = 0): void {
++    void itemType; void itemOrdinal;
++    this.run("INSERT INTO storage_items (user_id, item_id, quantity, added_at) VALUES (?, ?, 1, ?)", userId, itemId, Date.now());
++  }
++
++  getStorage(userId: number): Row[] {
++    return this.all("SELECT * FROM storage_items WHERE user_id = ?", userId);
++  }
++
++  addRecycleItem(userId: number, itemId: number, quantity = 1): void {
++    this.run("INSERT INTO recycle_items (user_id, item_id, quantity, added_at) VALUES (?, ?, ?, ?)", userId, itemId, quantity, Date.now());
++  }
++
++  getRecycleItems(userId: number): Row[] {
++    return this.all("SELECT * FROM recycle_items WHERE user_id = ?", userId);
++  }
++
++  removeRecycleItem(userId: number, id: number): void {
++    this.run("DELETE FROM recycle_items WHERE user_id = ? AND id = ?", userId, id);
++  }
++
++  addPotion(userId: number, potionId: number, quantity = 1): void {
++    this.run("INSERT INTO potions (user_id, potion_id, quantity, added_at) VALUES (?, ?, ?, ?)", userId, potionId, quantity, Date.now());
++  }
++
++  getPotions(userId: number): Row[] {
++    return this.all("SELECT * FROM potions WHERE user_id = ?", userId);
++  }
++
++  removePotion(userId: number, potionId: number): void {
++    this.run("DELETE FROM potions WHERE user_id = ? AND potion_id = ?", userId, potionId);
++  }
++
++  // ── cards ─────────────────────────────────────────────────────────────
++  addCard(userId: number, cardId: number, seriesId = 0, albumId = 0): void {
++    this.run("INSERT INTO user_cards (user_id, card_id, series_id, album_id, quantity) VALUES (?, ?, ?, ?, 1)", userId, cardId, seriesId, albumId);
++  }
++
++  getCards(userId: number): Row[] {
++    return this.all("SELECT id, card_id, series_id, album_id, quantity FROM user_cards WHERE user_id = ?", userId);
++  }
++
++  getCardsByAlbum(userId: number, albumId: number): Row[] {
++    return this.all("SELECT id, card_id, series_id, album_id, quantity FROM user_cards WHERE user_id = ? AND album_id = ?", userId, albumId);
++  }
++
++  // ── animals ───────────────────────────────────────────────────────────
++  getAnimals(userId: number): Row[] {
++    return this.all("SELECT * FROM user_animals WHERE user_id = ?", userId);
++  }
++
++  addAnimal(userId: number, animalId: number, name: string): void {
++    this.run("INSERT INTO user_animals (user_id, animal_id, name, adopted_at) VALUES (?, ?, ?, ?)", userId, animalId, name, Date.now());
++  }
++
++  renameAnimal(animalId: number, name: string): void {
++    this.run("UPDATE user_animals SET name = ? WHERE id = ?", name, animalId);
++  }
++
++  feedAnimal(animalId: number): void {
++    this.run("UPDATE user_animals SET hunger = MIN(100, hunger + 20), happiness = MIN(100, happiness + 20), last_fed = ? WHERE id = ?", Date.now(), animalId);
++  }
++
++  cleanAnimal(animalId: number): void {
++    this.run("UPDATE user_animals SET cleanliness = MIN(100, cleanliness + 20) WHERE id = ?", animalId);
++  }
++
++  // ── buddies ───────────────────────────────────────────────────────────
++  getBuddies(userId: number): Row[] {
++    return this.all("SELECT b.buddy_id, a.username FROM user_buddies b LEFT JOIN accounts a ON a.id = b.buddy_id WHERE b.user_id = ?", userId);
++  }
++
++  getPendingBuddyRequests(userId: number): Row[] {
++    return this.all("SELECT br.buddy_id AS player_id, a.username FROM buddy_requests br LEFT JOIN accounts a ON a.id = br.buddy_id WHERE br.user_id = ?", userId);
++  }
++
++  getBuddyRelation(userId: number, buddyId: number): Row {
++    return this.get("SELECT * FROM user_buddies WHERE user_id = ? AND buddy_id = ?", userId, buddyId);
++  }
++
++  addBuddy(userId: number, buddyId: number): void {
++    this.run("INSERT OR IGNORE INTO user_buddies (user_id, buddy_id, added_at) VALUES (?, ?, ?)", userId, buddyId, Date.now());
++    this.run("DELETE FROM buddy_requests WHERE user_id = ? AND buddy_id = ?", userId, buddyId);
++  }
++
++  acceptBuddy(userId: number, buddyId: number): void {
++    this.addBuddy(userId, buddyId);
++    this.addBuddy(buddyId, userId);
++  }
++
++  removeBuddy(userId: number, buddyId: number): void {
++    this.run("DELETE FROM user_buddies WHERE user_id = ? AND buddy_id = ?", userId, buddyId);
++  }
++
++  // ── quests ────────────────────────────────────────────────────────────
++  getQuest(userId: number, questId: number): Row {
++    return this.get("SELECT * FROM user_quests WHERE user_id = ? AND quest_id = ? ORDER BY id DESC", userId, questId);
++  }
++
++  getQuests(userId: number): Row[] {
++    return this.all("SELECT quest_id, stage, status, progress, completed, started_at, completed_at FROM user_quests WHERE user_id = ?", userId);
++  }
++
++  startQuest(userId: number, questId: number): void {
++    this.run("INSERT INTO user_quests (user_id, quest_id, status, stage, started_at) VALUES (?, ?, 'active', 0, ?)", userId, questId, Date.now());
++  }
++
++  updateQuestStage(userId: number, questId: number, stage: number): void {
++    this.run("UPDATE user_quests SET stage = ?, status = 'active' WHERE user_id = ? AND quest_id = ?", stage, userId, questId);
++  }
++
++  completeQuest(userId: number, questId: number): void {
++    this.run("UPDATE user_quests SET status = 'completed', completed = 1, completed_at = ? WHERE user_id = ? AND quest_id = ?", Date.now(), userId, questId);
++  }
++
++  // ── house ─────────────────────────────────────────────────────────────
++  getHouse(userId: number): Row {
++    let house = this.get("SELECT * FROM houses WHERE player_id = ?", userId);
++    if (!house) {
++      this.run("INSERT INTO houses (player_id) VALUES (?)", userId);
++      house = this.get("SELECT * FROM houses WHERE player_id = ?", userId);
++    }
++    return house;
++  }
++
++  updateHouseType(userId: number, typeId: number): void {
++    this.getHouse(userId);
++    this.run("UPDATE houses SET type_id = ? WHERE player_id = ?", typeId, userId);
++  }
++
++  upgradeHouseSize(userId: number, size: number): void {
++    this.getHouse(userId);
++    this.run("UPDATE houses SET size = ? WHERE player_id = ?", size, userId);
++  }
++
++  upgradeHouseElectric(userId: number, level: number): void {
++    this.getHouse(userId);
++    this.run("UPDATE houses SET electric_level = ? WHERE player_id = ?", level, userId);
++  }
++
++  getHouseItems(playerId: number): Row[] {
++    return this.all("SELECT * FROM house_items WHERE player_id = ?", playerId);
++  }
++
++  placeHouseItem(itemId: number, tileX: number, tileY: number): void {
++    this.run("UPDATE house_items SET tile_x = ?, tile_y = ?, placed = 1 WHERE id = ?", tileX, tileY, itemId);
++  }
++
++  unplaceHouseItem(itemId: number): void {
++    this.run("UPDATE house_items SET placed = 0 WHERE id = ?", itemId);
++  }
++
++  addHousePlant(userId: number, plantId: number, tile: number): void {
++    this.run("INSERT INTO house_plants (player_id, plant_id, tile, planted_at) VALUES (?, ?, ?, ?)", userId, plantId, tile, Date.now());
++  }
++
++  getHousePlants(userId: number): Row[] {
++    return this.all("SELECT * FROM house_plants WHERE player_id = ?", userId);
++  }
++
++  removeHousePlant(plantId: number): void {
++    this.run("DELETE FROM house_plants WHERE id = ?", plantId);
++  }
++
++  waterPlant(plantId: number): void {
++    this.run("UPDATE house_plants SET state = 'watered' WHERE id = ?", plantId);
++  }
++
++  updatePlantState(plantId: number, state: string): void {
++    this.run("UPDATE house_plants SET state = ? WHERE id = ?", state, plantId);
++  }
++
++  // ── world / stores / scores ───────────────────────────────────────────
++  getRoomData(roomId: number): Row {
++    return this.get("SELECT * FROM rooms WHERE id = ?", roomId);
++  }
++
++  getRoomPortals(roomId: number): Row[] {
++    return this.all("SELECT * FROM room_portals WHERE room_id = ?", roomId);
++  }
++
++  getRoomNpcs(roomId: number): Row[] {
++    return this.all("SELECT * FROM room_npcs WHERE room_id = ?", roomId);
++  }
++
++  getStore(storeId: number): Row {
++    return this.get("SELECT * FROM stores WHERE id = ?", storeId);
++  }
++
++  addHighScore(userId: number, gameId: number, score: number, period = "daily"): void {
++    this.run("INSERT INTO high_scores (user_id, game_id, score, period, played_at) VALUES (?, ?, ?, ?, ?)", userId, gameId, score, period, Date.now());
++  }
++
++  getHighScores(gameId: number, period = "daily", limit = 10): Row[] {
++    return this.all("SELECT h.user_id, a.username, h.score FROM high_scores h LEFT JOIN accounts a ON a.id = h.user_id WHERE h.game_id = ? AND h.period = ? ORDER BY h.score DESC LIMIT ?", gameId, period, limit);
++  }
++
++  addBan(userId: number, reason: string, bannedBy = 0, _active = 1): void {
++    this.run("INSERT INTO bans (user_id, reason, banned_by, created_at) VALUES (?, ?, ?, ?)", userId, reason, bannedBy, Date.now());
++    this.run("UPDATE users SET is_banned = 1, ban_reason = ? WHERE id = ?", reason, userId);
++  }
++
++  // ── daily rewards ─────────────────────────────────────────────────────
++  getDailyReward(userId: number, day: string): Row {
++    return this.get("SELECT * FROM daily_rewards WHERE user_id = ? AND day = ?", userId, day);
++  }
++
++  addDailyReward(userId: number, day: string, data: Row = {}): void {
++    this.run("INSERT OR IGNORE INTO daily_rewards (user_id, day, data) VALUES (?, ?, ?)", userId, day, JSON.stringify(data));
++  }
++
++  claimDailyReward(userId: number, day: string): void {
++    this.addDailyReward(userId, day);
++    this.run("UPDATE daily_rewards SET claimed = 1 WHERE user_id = ? AND day = ?", userId, day);
++  }
++}
++
++export default Database;
+diff --git a/server/src/http/HttpServer.ts b/server/src/http/HttpServer.ts
+index 17f3dcf..7392ae0 100755
+--- a/server/src/http/HttpServer.ts
++++ b/server/src/http/HttpServer.ts
+@@ -3,6 +3,9 @@ import type { Request, Response } from "express";
+ import * as path from "path";
+ import * as fs from "fs";
+ import * as crypto from "crypto";
++import { mountAdmin } from "../admin/routes";
++import type { AdminService } from "../admin/service";
++import { signSession } from "./SessionToken";
+ 
+ // ── paths ─────────────────────────────────────────────────────────────
+ 
+@@ -60,7 +63,7 @@ function getDb(): ReturnType<typeof import("better-sqlite3")> {
+ 
+ // ── server factory ────────────────────────────────────────────────────
+ 
+-export function createHttpServer(port: number): any {
++export function createHttpServer(port: number, adminService?: AdminService): any {
+   const app = express();
+ 
+   // CORB bypass: all ekoloko-web responses as text/plain
+@@ -78,14 +81,24 @@ export function createHttpServer(port: number): any {
+   app.use(express.json());
+   app.use(express.urlencoded({ extended: true }));
+ 
+-  // CORS for all responses
+-  app.use((_req: Request, res: Response, next) => {
++  // CORS for game responses only. The admin console is same-origin with credentials.
++  app.use((req: Request, res: Response, next) => {
++    if (req.path.startsWith("/admin")) {
++      res.header("Cache-Control", "no-store");
++      res.header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; form-action 'self'");
++      res.header("X-Content-Type-Options", "nosniff");
++      res.header("Referrer-Policy", "no-referrer");
++      return next();
++    }
+     res.header("Access-Control-Allow-Origin", "*");
+     res.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+     res.header("Access-Control-Allow-Headers", "Content-Type");
+     next();
+   });
+ 
++  // ── admin console (bilingual) ────────────────────────────────────────
++  if (adminService) mountAdmin(app, adminService);
++
+   // ── crossdomain.xml ─────────────────────────────────────────────────
+   app.get("/crossdomain.xml", (_req: Request, res: Response) => {
+     res.type("application/xml").send(CROSSDOMAIN_XML);
+@@ -96,10 +109,16 @@ export function createHttpServer(port: number): any {
+   app.use("/ekoloko-json", express.static(STATIC_DATA_DIR));
+ 
+   // ── config files ────────────────────────────────────────────────────
++  // Generated config must win over the vendored client copy: the client tree
++  // still contains localhost snapshots that would otherwise shadow these.
+   app.use("/ekoloko/conf", express.static(path.join(CONFIG_DIR, "conf")));
+   app.use("/ekoloko/loading_page", express.static(path.join(CONFIG_DIR, "loading_page")));
+   app.use("/ekoloko/helper", express.static(path.join(CONFIG_DIR, "helper")));
+ 
++  // Local consolidation: serve the launcher and Ruffle bootstrap from the
++  // asset root. nginx serves these directly in production; this covers dev.
++  app.use(express.static(GAME_ASSETS_ROOT));
++
+   // ── game assets ─────────────────────────────────────────────────────
+   app.use("/ekoloko", express.static(path.join(GAME_ASSETS_ROOT, "ekoloko")));
+   app.use("/games", express.static(path.join(GAME_ASSETS_ROOT, "games")));
+@@ -290,6 +309,10 @@ export function createHttpServer(port: number): any {
+       console.log("[HTTP] Login OK:", userName, loginResult);
+       res.set("Cache-Control", "no-store");
+       res.set("Content-Type", "text/html; charset=utf-8");
++      // The Flash client opens its SmartFox socket through Ruffle's /ws bridge.
++      // Carry the authenticated identity on a signed cookie so the socket
++      // inherits it instead of relying on a hardcoded dev account.
++      res.set("Set-Cookie", `ekoloko_user=${encodeURIComponent(signSession(String(user["username"])))}; Path=/; SameSite=Lax; HttpOnly`);
+       res.send(JSON.stringify([loginResult]));
+     } catch (err: unknown) {
+       console.error("[HTTP] Login GET error:", err);
+@@ -299,6 +322,50 @@ export function createHttpServer(port: number): any {
+     }
+   });
+ 
++  // ── gift-card / Eko-Code redemption (Flash client endpoints) ────────
++  const redeemHandler = async (req: Request, res: Response) => {
++    res.set("Cache-Control", "no-store");
++    res.set("Content-Type", "text/plain; charset=utf-8");
++    const q = req.query as Record<string, string>;
++    const userName = q.userName || q.username || "";
++    const password = q.password || "";
++    const code = q.code || q.cardNumber || q.card || q.voucher || "";
++    const fail = (reason: string) => res.send(JSON.stringify([reason]));
++
++    if (!userName || !password || !code) {
++      fail("Missing credentials or code");
++      return;
++    }
++    const db = getDb();
++    const passwordHash = crypto.createHash("md5").update(password).digest("hex");
++    const user = db.prepare("SELECT * FROM users WHERE username = ? COLLATE NOCASE AND password_hash = ?")
++      .get(userName, passwordHash) as Record<string, unknown> | undefined;
++    if (!user) {
++      fail("bad_user_password");
++      return;
++    }
++    if (!adminService) {
++      fail("redemption_unavailable");
++      return;
++    }
++    const ctx = {
++      admin: { id: 0, username: "game-redeem", role: "owner" as const, disabled: 0, created_at: 0 },
++      ip: req.ip || "",
++      userAgent: req.get("user-agent") || "",
++      sessionId: "http-redeem",
++    };
++    try {
++      const result = await adminService.redeemCode(ctx, code, Number(user["id"]), "game HTTP redemption");
++      console.log(`[HTTP] Redeemed code for ${userName}: batch ${result.batchId}`);
++      res.send(JSON.stringify(["ok"]));
++    } catch (error) {
++      console.warn("[HTTP] Redemption failed:", (error as Error).message);
++      fail("invalid_code");
++    }
++  };
++  app.get("/ekoloko-web/redeemCard.action", redeemHandler);
++  app.get("/ekoloko-web/creditsRedeemCard.action", redeemHandler);
++
+   // ── username validation ─────────────────────────────────────────────
+   app.get("/ekoloko-web/validateUsername.action", (req: Request, res: Response) => {
+     const { username } = req.query as { username?: string };
+@@ -423,9 +490,9 @@ export function createHttpServer(port: number): any {
+ <data>
+   <servers>
+     <server>
+-      <ip>${process.env["SFS_HOST"] ?? "play.ekoloko.com"}</ip>
++      <ip>${process.env["SFS_HOST"] ?? process.env["EKOLOKO_HOST"] ?? "localhost"}</ip>
+       <port>${process.env["SFS_PORT"] ?? "9339"}</port>
+-      <bb_ip>${process.env["SFS_HOST"] ?? "play.ekoloko.com"}</bb_ip>
++      <bb_ip>${process.env["SFS_HOST"] ?? process.env["EKOLOKO_HOST"] ?? "localhost"}</bb_ip>
+       <bb_port>80</bb_port>
+       <channels>
+         <channel fr="Pr\u00E9 de Heathcliff" en="Heathcliff's Meadow" iw="\u05D4\u05D0\u05D7\u05D5 \u05E9\u05DC \u05D4\u05D9\u05EA'\u05E7\u05DC\u05D9\u05E3" state="on">1</channel>
+diff --git a/server/src/index.ts b/server/src/index.ts
+index 49d3a73..89f3a1a 100755
+--- a/server/src/index.ts
++++ b/server/src/index.ts
+@@ -1,22 +1,28 @@
+-import * as net from "net";
+ import * as fs from "fs";
+ import * as path from "path";
+-import Database from "better-sqlite3";
++// Local consolidation: use the restored data layer instead of a bare sqlite handle.
++import { Database } from "./database/Database";
+ import { createHttpServer } from "./http/HttpServer";
++import { createDb } from "./admin/db";
++import { AdminService } from "./admin/service";
+ import { generateAllStaticData } from "./static/StaticData";
+ import { generateAllConfigFiles } from "./static/ConfigFiles";
+ import { WebSocketProxy } from "./protocol/WebSocketProxy";
+ import { GameState } from "./game/GameState";
++import { ServerState } from "./game/ServerState";
++import { ExtensionRouter } from "./extensions/ExtensionRouter";
++import { startProtocolBridge } from "./protocol/ProtocolBridge";
+ 
+ // ── configuration ─────────────────────────────────────────────────────
+ 
+ const TCP_PORT = parseInt(process.env["TCP_PORT"] ?? "9339", 10);
+-const HTTP_PORT = parseInt(process.env["HTTP_PORT"] ?? "8080", 10);
++// Cloud Run / ECS inject PORT; keep HTTP_PORT as the local override.
++const HTTP_PORT = parseInt(process.env["HTTP_PORT"] ?? process.env["PORT"] ?? "8080", 10);
+ const DB_PATH = path.resolve(__dirname, "../database/ekoloko.db");
+ 
+ // ── database initialization ───────────────────────────────────────────
+ 
+-function initDatabase(): Database.Database {
++function initDatabase(): Database {
+   const dbDir = path.dirname(DB_PATH);
+   if (!fs.existsSync(dbDir)) {
+     fs.mkdirSync(dbDir, { recursive: true });
+@@ -131,7 +137,7 @@ function initDatabase(): Database.Database {
+ 
+ // ── seed data ─────────────────────────────────────────────────────────
+ 
+-function seedData(db: Database.Database): void {
++function seedData(db: Database): void {
+   const userCount = (db.prepare("SELECT COUNT(*) as cnt FROM users").get() as { cnt: number }).cnt;
+   if (userCount > 0) {
+     console.log(`[DB] Database already has ${userCount} user(s), skipping seed.`);
+@@ -170,122 +176,9 @@ function seedData(db: Database.Database): void {
+   console.log("[DB] Seed data inserted (Admin + TestUser).");
+ }
+ 
+-// ── TCP socket server (SmartFox protocol) ─────────────────────────────
+-
+-function startTcpServer(port: number): void {
+-  const server = net.createServer((socket: net.Socket) => {
+-    const addr = `${socket.remoteAddress}:${socket.remotePort}`;
+-    console.log(`[TCP] Client connected: ${addr}`);
+-
+-    let buffer = "";
+-
+-    // Send cross-domain policy proactively on connect
+-    socket.write(`<?xml version="1.0"?><!DOCTYPE cross-domain-policy SYSTEM "http://www.adobe.com/xml/dtds/cross-domain-policy.dtd"><cross-domain-policy><allow-access-from domain="*" to-ports="*"/></cross-domain-policy>` + "\0");
+-
+-    socket.on("data", (data: Buffer) => {
+-      buffer += data.toString("utf-8");
+-      let nullIdx: number;
+-      while ((nullIdx = buffer.indexOf("\0")) !== -1) {
+-        const message = buffer.slice(0, nullIdx);
+-        buffer = buffer.slice(nullIdx + 1);
+-        if (message.length > 0) {
+-          handleTcpMessage(socket, message);
+-        }
+-      }
+-    });
+-
+-    socket.on("close", () => {
+-      console.log(`[TCP] Client disconnected: ${addr}`);
+-    });
+-
+-    socket.on("error", (err: Error) => {
+-      console.error(`[TCP] Socket error (${addr}):`, err.message);
+-    });
+-  });
+-
+-  server.listen(port, "0.0.0.0", () => {
+-    console.log(`[TCP] SmartFox server listening on tcp://0.0.0.0:${port}`);
+-  });
+-}
+-
+-function handleTcpMessage(socket: net.Socket, message: string): void {
+-  console.log("[TCP] <<", message.substring(0, 200));
+-
+-  if (message.includes("policy-file-request")) {
+-    socket.write(`<?xml version="1.0"?><!DOCTYPE cross-domain-policy SYSTEM "http://www.adobe.com/xml/dtds/cross-domain-policy.dtd"><cross-domain-policy><allow-access-from domain="*" to-ports="*"/></cross-domain-policy>` + "\0");
+-    return;
+-  }
+-
+-  if (message.includes("verChk")) {
+-    console.log("[TCP] verChk -> apiOK");
+-    socket.write(`<msg t="sys"><body action="apiOK" r="0"></body></msg>` + "\0");
+-    return;
+-  }
+-
+-  if (message.includes("zInfo")) {
+-    console.log("[TCP] zInfo -> rmList");
+-    socket.write("<msg t=\"sys\"><body action=\"rmList\" r=\"0\"><rmList><rm id=\"1\" maxu=\"100\" maxs=\"0\" temp=\"0\" game=\"0\" priv=\"0\" lmb=\"0\" ucnt=\"5\" scnt=\"0\"><n><![CDATA[1]]></n><vars></vars></rm></rmList></body></msg>\0");
+-    console.log("[TCP] >> rmList sent");
+-    return;
+-  }
+-
+-  if (message.includes("rndK")) {
+-    const key = Math.random().toString(36).substring(2, 15);
+-    console.log("[TCP] rndK -> key:", key);
+-    socket.write(`<msg t="sys"><body action="rndK" r="-1"><k>${key}</k></body></msg>` + "\0");
+-    return;
+-  }
+-
+-  if (message.includes("login") && (message.includes("nick") || message.includes("CDATA"))) {
+-    const nickMatch = message.match(/nick[^>]*>(?:<!\[CDATA\[)?([^\]<]+)/);
+-    const username = nickMatch ? nickMatch[1] : "Player";
+-    console.log("[TCP] login ->", username);
+-    socket.write(`<msg t="sys"><body action="logOK" r="0"><login id="1" mod="0" n="${username}" /></body></msg>` + "\0");
+-    const loginData: any = {"21":"23","20":"9.1","25":1,"27":username,"28":Date.now(),"29":false,"30":true,"31":365,"33":true,"235":500,"320":5,"321":10,"322":1,"404":30,"490":100,"491":20,"339":true,"343":0,"536":true,"594":false,"596":0,"474":false,"246":false,"435":false,"433":false,"481":false,"592":false,"276":false,"599":false,"610":false,"572":0,"609":12,"580":0,"409":1,"578":true,"349":false,"122":{},"257":[],"420":[],"631":[],"674":[],"285":null,"383":null,"559":[],"439":[],"447":[],"621":[],"622":[],"623":[],"335":[],"537":[],"538":[],"539":[],"514":[],"560":[],"566":true,"507":0,"626":10,"627":30,"341":null,"342":50,"511":0,"344":[],"418":0,"401":true,"400":true,"403":1,"573":100,"605":5,"607":3,"608":7,"629":14,"313":0,"488":false,"601":null,"332":0,"337":0,"579":null};
+-    socket.write(JSON.stringify({t:"xt",b:{o:loginData}}) + "\0");
+-    return;
+-  }
+-
+-  if (message.includes("getRmList")) {
+-    console.log("[TCP] getRmList");
+-    socket.write(`<msg t="sys"><body action="rmList" r="0"><rmList><rm id="1" maxu="100" maxs="0" temp="0" game="0" priv="0" lmb="0" ucnt="5" scnt="0"><n><![CDATA[Channel1]]></n><vars></vars></rm></rmList></body></msg>` + "\0");
+-    return;
+-  }
+-
+-  if (message.includes("joinRoom")) {
+-    console.log("[TCP] joinRoom");
+-    socket.write(`<msg t="sys"><body action="joinOK" r="1"><pid id="1" /><uLs></uLs><vars></vars></body></msg>` + "\0");
+-    return;
+-  }
+-
+-  if (message.includes("loadB")) {
+-    console.log("[TCP] loadB");
+-    socket.write(`<msg t="sys"><body action="bList"><mv></mv><bList></bList></body></msg>` + "\0");
+-    return;
+-  }
+-
+-  if (message.includes("setUvars")) {
+-    console.log("[TCP] setUvars");
+-    return;
+-  }
+-
+-  if (message.startsWith("{")) {
+-    try {
+-      const data = JSON.parse(message);
+-      console.log("[TCP] Extension:", data.b?.x, data.b?.c);
+-      socket.write(JSON.stringify({t:"xt",b:{o:{}}}) + "\0");
+-    } catch(e) {
+-      console.log("[TCP] JSON parse error");
+-    }
+-    return;
+-  }
+-
+-  console.log("[TCP] Unhandled:", message.substring(0, 200));
+-}
+-
+ // ── main ──────────────────────────────────────────────────────────────
+ 
+-function main(): void {
++async function main(): Promise<void> {
+   console.log("=".repeat(60));
+   console.log("  Ekoloko Game Server");
+   console.log("=".repeat(60));
+@@ -303,22 +196,37 @@ function main(): void {
+   // 4. Generate config files
+   generateAllConfigFiles();
+ 
+-  // 5. Start TCP socket server
+-  startTcpServer(TCP_PORT);
++  // 5. Start the preserved SmartFox protocol stack (TCP + sessions + extensions)
++  const serverState = new ServerState();
++  const extensionRouter = new ExtensionRouter(db, serverState);
++  await startProtocolBridge(db, serverState, extensionRouter, TCP_PORT);
++
++  // 6. Start admin service (one source of truth for admin identity/state)
++  const adminDb = await createDb({
++    driver: process.env.DB_DRIVER === "postgres" ? "postgres" : "sqlite",
++    sqlitePath: DB_PATH,
++    databaseUrl: process.env.DATABASE_URL,
++  });
++  const adminService = new AdminService(adminDb);
++  await adminService.initialize();
+ 
+-  // 6. Start HTTP server
+-  const httpServer = createHttpServer(HTTP_PORT);
++  // 7. Start HTTP server (game routes + /admin dashboard)
++  const httpServer = createHttpServer(HTTP_PORT, adminService);
+ 
+-  // 7. Start WebSocket proxy (for Ruffle Flash emulator)
++  // 8. Start WebSocket proxy (for Ruffle Flash emulator)
+   new WebSocketProxy(httpServer, "127.0.0.1", TCP_PORT);
+ 
+-  // 8. Print startup summary
++  // 9. Print startup summary
+   console.log();
+   console.log("[Server] Startup complete!");
+   console.log(`[Server] TCP (SmartFox): tcp://0.0.0.0:${TCP_PORT}`);
+   console.log(`[Server] HTTP (Express): http://0.0.0.0:${HTTP_PORT}`);
+   console.log(`[Server] Game state: ${JSON.stringify(GameState.getStats())}`);
++  console.log(`[Server] Admin: http://0.0.0.0:${HTTP_PORT}/admin`);
+   console.log();
+ }
+ 
+-main();
++main().catch((error) => {
++  console.error("[Server] Fatal startup error:", error);
++  process.exit(1);
++});
+diff --git a/server/src/protocol/WebSocketProxy.ts b/server/src/protocol/WebSocketProxy.ts
+index eab8497..2b6b870 100755
+--- a/server/src/protocol/WebSocketProxy.ts
++++ b/server/src/protocol/WebSocketProxy.ts
+@@ -1,6 +1,8 @@
+ import { WebSocketServer, WebSocket } from "ws";
+ import * as net from "net";
+ import * as http from "http";
++import * as fs from "fs";
++import { usernameFromCookie } from "../http/SessionToken";
+ 
+ export class WebSocketProxy {
+   private wss: WebSocketServer;
+@@ -11,11 +13,25 @@ export class WebSocketProxy {
+       console.log("[WS] New WebSocket connection from " + req.socket.remoteAddress);
+       const tcp = net.createConnection({ host: this.targetHost, port: this.targetPort }, () => {
+         console.log("[WS] TCP connection established to " + this.targetHost + ":" + this.targetPort);
++        // Pass the HTTP-authenticated identity to the SmartFox session. The
++        // bridge verifies the signed token before trusting it.
++        const cookieUser = usernameFromCookie(req.headers.cookie);
++        if (cookieUser) {
++          const match = (req.headers.cookie || "").match(/ekoloko_user=([^;]+)/);
++          const token = match ? decodeURIComponent(match[1]) : "";
++          tcp.write(
++            `<msg t='sys'><body action='sessionUser' r='0'><user n='${cookieUser}' k='${token}' /></body></msg>` + "\0"
++          );
++          console.log("[WS] Inherited authenticated user " + cookieUser);
++        }
+       });
+ 
+       ws.on("message", (data: Buffer) => {
+         const str = data.toString("utf-8");
+         console.log("[WS] Browser->Server (" + data.length + "b): " + str.substring(0, 200));
++        if (process.env.EKOLOKO_CAPTURE_FRAMES === "1") {
++          try { fs.appendFileSync("/tmp/ekoloko-frames.log", `${Date.now()} RAW C->S ${JSON.stringify(str)}\n`); } catch { /* best effort */ }
++        }
+         if (tcp.writable) {
+           tcp.write(data);
+         }
+diff --git a/server/src/static/ConfigFiles.ts b/server/src/static/ConfigFiles.ts
+index 5fd7017..a6a5920 100755
+--- a/server/src/static/ConfigFiles.ts
++++ b/server/src/static/ConfigFiles.ts
+@@ -2,7 +2,7 @@ import * as fs from "fs";
+ import * as path from "path";
+ 
+ const CONFIG_DIR = path.resolve(__dirname, "../../config");
+-const SERVER_HOST = process.env.EKOLOKO_HOST ?? "play.ekoloko.com";
++const SERVER_HOST = process.env.EKOLOKO_HOST ?? "localhost";
+ 
+ function ensureDir(dir: string): void {
+   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+@@ -596,6 +596,20 @@ function generateHelperLocations(): string {
+ </data>`;
+ }
+ 
++// ── sfs_servers.xml ───────────────────────────────────────────────────
++
++function generateSfsServers(): string {
++  const source = path.resolve(__dirname, "../../../../client/ekoloko/conf/sfs_servers.xml");
++  if (fs.existsSync(source)) {
++    return fs
++      .readFileSync(source, "utf8")
++      .replace(/<ip>localhost<\/ip>/g, `<ip>${SERVER_HOST}</ip>`)
++      .replace(/<bb_ip>localhost<\/bb_ip>/g, `<bb_ip>${SERVER_HOST}</bb_ip>`)
++      .replace(/<port>9339<\/port>/g, `<port>${process.env["SFS_PORT"] ?? "9339"}</port>`);
++  }
++  return `<?xml version="1.0" encoding="utf-8" ?><data><servers><server><ip>${SERVER_HOST}</ip><port>${process.env["SFS_PORT"] ?? "9339"}</port><bb_ip>${SERVER_HOST}</bb_ip><bb_port>80</bb_port><channels></channels></server></servers></data>`;
++}
++
+ // ── main export ───────────────────────────────────────────────────────
+ 
+ export function generateAllConfigFiles(): void {
+@@ -604,6 +618,7 @@ export function generateAllConfigFiles(): void {
+   console.log("[ConfigFiles] Generating XML config files...");
+ 
+   writeFile("conf/urls_general.xml", generateUrlsGeneral());
++  writeFile("conf/sfs_servers.xml", generateSfsServers());
+   writeFile("conf/urls.xml", generateUrls());
+   writeFile("conf/files_version.xml", generateFilesVersion());
+   writeFile("conf/admin_messages.xml", generateAdminMessages());

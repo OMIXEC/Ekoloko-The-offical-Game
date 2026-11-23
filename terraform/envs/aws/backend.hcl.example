@@ -1,0 +1,7 @@
+# Create the S3 bucket (versioning on) + DynamoDB lock table first, then:
+#   terraform init -backend-config=../backend.hcl.example
+bucket         = "my-aws-tfstate"
+key            = "ekoloko/aws/prod/terraform.tfstate"
+region         = "eu-west-1"
+dynamodb_table = "my-aws-tfstate-lock"
+encrypt        = true

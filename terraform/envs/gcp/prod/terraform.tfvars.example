@@ -1,0 +1,14 @@
+project_id     = "my-gcp-project"
+region         = "europe-west1"
+name           = "ekoloko-prod"
+backend_image  = "gcr.io/my-gcp-project/ekoloko-backend:1.0.0"
+host           = "play.example.com"
+client_domain  = "play.example.com"
+assets_location = "EU"
+min_instances  = 1
+max_instances  = 1
+
+# Secret Manager example:
+# secret_env = {
+#   ADMIN_TOKEN = { secret = "projects/my-gcp-project/secrets/ekoloko-admin-token", version = "latest" }
+# }

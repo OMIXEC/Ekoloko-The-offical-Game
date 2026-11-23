@@ -1,0 +1,5 @@
+# Create the bucket and a versioned state bucket first, then:
+#   terraform init -backend-config=../backend.hcl.example
+bucket  = "my-gcp-tfstate"
+prefix  = "ekoloko/gcp/prod"
+project = "my-gcp-project"

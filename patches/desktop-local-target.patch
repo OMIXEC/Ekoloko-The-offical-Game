@@ -1,0 +1,142 @@
+diff --git a/src/main/cookieMigration.js b/src/main/cookieMigration.js
+index 70e05b9..60a8610 100644
+--- a/src/main/cookieMigration.js
++++ b/src/main/cookieMigration.js
+@@ -6,9 +6,9 @@
+ // version 12, values unencrypted. This Chromium no longer migrates a cookie
+ // database that old: it moves the file to Network/Cookies and starts it empty,
+ // so every player would be signed out once (measured: a persistent
+-// play.ekoloko.org cookie written by 1.1.1 was gone in 2.0.0; localStorage
++// / cookie written by 1.1.1 was gone in 2.0.0; localStorage
+ // survived). So, before Chromium touches it: read the old file's persistent,
+-// unexpired ekoloko.org cookies, move the file aside (Cookies.electron8.bak),
++// unexpired / cookies, move the file aside (Cookies.electron8.bak),
+ // and after "ready" put them back with session.cookies.set().
+ 
+ const fs = require("fs");
+@@ -18,7 +18,9 @@ const BACKUP_SUFFIX = ".electron8.bak";
+ 
+ function isEkolokoHost(host) {
+   const h = String(host || "").replace(/^\./, "").toLowerCase();
+-  return h === "ekoloko.org" || h.endsWith(".ekoloko.org");
++  const allowed = (process.env.EKOLOKO_ALLOWED_HOSTS || "")
++    .split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
++  return allowed.includes(h);
+ }
+ 
+ // Before "ready". Returns the cookies to restore (possibly empty).
+@@ -93,7 +95,7 @@ async function restoreCookies(ses, cookies, logger) {
+   } catch (e) {
+     /* written later anyway */
+   }
+-  logger.info("cookies", `restored ${ok} of ${cookies.length} ekoloko.org cookies from 1.x`);
++  logger.info("cookies", `restored ${ok} of ${cookies.length} allowed-host cookies from 1.x`);
+ }
+ 
+ module.exports = { readLegacyCookies, restoreCookies };
+diff --git a/src/main/index.js b/src/main/index.js
+index cc2cde0..b3f6725 100644
+--- a/src/main/index.js
++++ b/src/main/index.js
+@@ -35,9 +35,11 @@ const cookieMigration = require("./cookieMigration");
+ // Where the game is
+ // ---------------------------------------------------------------------------
+ 
++// Local consolidation: point the wrapper at our deployment via env vars.
++// EKOLOKO_PROD_URL / EKOLOKO_BETA_URL override the upstream public targets.
+ const TARGETS = {
+-  prod: "https://play.ekoloko.org/",
+-  beta: "https://playtesting.ekoloko.org/",
++  prod: process.env.EKOLOKO_PROD_URL || "http://localhost:8080/launcher.html",
++  beta: process.env.EKOLOKO_BETA_URL || "http://localhost:8080/launcher.html",
+ };
+ 
+ function argValue(name) {
+@@ -48,8 +50,8 @@ function argValue(name) {
+ 
+ const ALLOW_LOCAL = !app.isPackaged && process.env.EKOLOKO_ALLOW_LOCAL === "1";
+ 
+-// Only ekoloko.org (and its subdomains) over https may load inside the app.
+-// Everything else opens in the system browser.
++// Only hosts named in EKOLOKO_ALLOWED_HOSTS (plus localhost in dev) may load
++// inside the app. Everything else opens in the system browser.
+ function isAllowedUrl(raw) {
+   let u;
+   try {
+@@ -60,19 +62,26 @@ function isAllowedUrl(raw) {
+   const host = u.hostname.toLowerCase();
+   // Development runs only (never a packaged build): a local game build for testing.
+   if (ALLOW_LOCAL && u.protocol === "http:" && (host === "127.0.0.1" || host === "localhost")) return true;
+-  if (u.protocol !== "https:") return false;
+-  return host === "ekoloko.org" || host.endsWith(".ekoloko.org");
++  if (u.protocol !== "https:" && u.protocol !== "http:") return false;
++  const extra = (process.env.EKOLOKO_ALLOWED_HOSTS || "")
++    .split(",")
++    .map((h) => h.trim().toLowerCase())
++    .filter(Boolean);
++  if (extra.includes(host) || extra.some((h) => h.startsWith(".") && host.endsWith(h))) {
++    return u.protocol === "https:" || ALLOW_LOCAL;
++  }
++  return false;
+ }
+ 
+ // Production by default. For testing:
+ //   ekoloko.exe --beta                (or EKOLOKO_TARGET=beta)
+-//   ekoloko.exe --url=https://<x>.ekoloko.org/...   (or EKOLOKO_URL=...)
+-// A non-ekoloko URL is ignored (falls back to production).
++//   ekoloko.exe --url=https://<host>/...   (or EKOLOKO_URL=...)
++// A URL outside the allowlist is ignored (falls back to production).
+ function resolveGameUrl() {
+   const explicit = argValue("url") || process.env.EKOLOKO_URL;
+   if (explicit) {
+     if (isAllowedUrl(explicit)) return { url: explicit, target: "custom" };
+-    console.warn(`ignoring --url ${explicit}: only https://*.ekoloko.org is allowed`);
++    console.warn(`ignoring --url ${explicit}: only configured hosts are allowed`);
+   }
+   const t = (argValue("target") || process.env.EKOLOKO_TARGET || "").toLowerCase();
+   if (process.argv.includes("--beta") || t === "beta") return { url: TARGETS.beta, target: "beta" };
+@@ -80,7 +89,7 @@ function resolveGameUrl() {
+ }
+ 
+ const GAME = resolveGameUrl();
+-const DISCORD_URL = "https://discord.gg/5uBSQx4yWa";
++const DISCORD_URL = process.env.EKOLOKO_COMMUNITY_URL || "";
+ 
+ // A test target gets its own profile, so beta cookies/storage never mix with
+ // the production login. EKOLOKO_USER_DATA / --user-data=<dir> override it
+@@ -98,7 +107,7 @@ const DISCORD_URL = "https://discord.gg/5uBSQx4yWa";
+ const DISCORD_CLIENT_ID = "1529879266370523206";
+ const PRESENCE_BUTTON_LABEL = "להורדת המשחק";
+ const PRESENCE_BUTTON_DISCORD_LABEL = "הצטרפו לקהילה";
+-const PRESENCE_BUTTON_URL = "https://ekoloko.org/";
++const PRESENCE_BUTTON_URL = process.env.EKOLOKO_PROD_URL || "http://localhost:8080/launcher.html";
+ 
+ const CONTROL_BAR_HEIGHT = 100;
+ const GAME_DEFAULT_WIDTH = 960;
+@@ -513,7 +522,7 @@ function isControlContents(wc) {
+ }
+ 
+ app.on("web-contents-created", (_event, wc) => {
+-  // Top-level navigation: ekoloko.org stays in the app, anything else goes to
++  // Top-level navigation: / stays in the app, anything else goes to
+   // the system browser. The control bar never navigates.
+   const guard = (event, url) => {
+     if (isControlContents(wc)) {
+@@ -533,7 +542,7 @@ app.on("web-contents-created", (_event, wc) => {
+     guard(event, event.url);
+   });
+ 
+-  // window.open / target=_blank: ekoloko.org pages open in a small in-app
++  // window.open / target=_blank: / pages open in a small in-app
+   // window (the game's info pages, as 1.x), everything else in the browser.
+   wc.setWindowOpenHandler(({ url }) => {
+     if (url === DISCORD_URL || !isAllowedUrl(url) || isControlContents(wc)) {
+@@ -877,7 +886,7 @@ function registerIpc() {
+     }
+   });
+ 
+-  onControl("open-discord", () => openExternal(DISCORD_URL));
++  onControl("open-discord", () => { if (DISCORD_URL) openExternal(DISCORD_URL); });
+ 
+   onControl("presence-details-toggle", (show) => {
+     presenceShowDetails = show === true;

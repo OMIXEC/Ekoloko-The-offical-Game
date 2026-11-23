@@ -1,0 +1,36 @@
+# Vendored upstream snapshots — fetched by scripts/bootstrap.sh
+/client/
+/desktop/
+/backend/
+
+# Dependencies and build output
+node_modules/
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+dist/
+build/Release/
+*.tsbuildinfo
+
+# Local state / secrets
+client/.dedupe-trash/
+.env
+backend/server/database/
+*.log
+tests/qa/test-results/
+playwright-report/
+codes*.csv
+gift*.csv
+rav*.csv
+.DS_Store
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+
+# Scratch work beyond the committed wayfinder map is ignored by default;
+# the tracker itself is explicitly tracked.
+.scratch/*
+!.scratch/ekoloko-platform/

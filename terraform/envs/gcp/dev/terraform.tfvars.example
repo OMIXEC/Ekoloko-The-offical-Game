@@ -1,0 +1,8 @@
+project_id     = "my-gcp-project"
+region         = "europe-west1"
+name           = "ekoloko-dev"
+backend_image  = "gcr.io/my-gcp-project/ekoloko-backend:dev"
+host           = "dev.example.com"
+client_domain  = "dev.example.com"
+min_instances  = 1
+max_instances  = 1
