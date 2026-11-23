@@ -29,12 +29,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: backend/server/package-lock.json
-      - run: npm ci --no-audit --no-fund
-        working-directory: backend/server
-      - run: npm run build
-        working-directory: backend/server
+      - name: Fetch pinned upstreams and apply patches
+        run: ./scripts/bootstrap.sh
       - name: Admin CLI smoke
         env:
           EKOLOKO_DB: ${{ github.workspace }}/backend/server/database/ci.db
@@ -66,10 +62,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: npm ci --no-audit --no-fund
-        working-directory: backend/server
-      - run: npm run build
-        working-directory: backend/server
+      - name: Fetch pinned upstreams and apply patches
+        run: ./scripts/bootstrap.sh
       - run: npm ci --no-audit --no-fund
         working-directory: tests/qa
       - run: npx playwright install --with-deps chromium
@@ -110,10 +104,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: desktop/package-lock.json
-      - run: npm ci --no-audit --no-fund
-        working-directory: desktop
+      - name: Fetch pinned upstreams and apply patches
+        run: ./scripts/bootstrap.sh
       - run: npm run check
         working-directory: desktop
       - name: Build Windows
@@ -144,6 +136,8 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+      - name: Fetch pinned upstreams and apply patches
+        run: ./scripts/bootstrap.sh
       - uses: docker/setup-buildx-action@v3
       - name: Build backend image
         uses: docker/build-push-action@v6
