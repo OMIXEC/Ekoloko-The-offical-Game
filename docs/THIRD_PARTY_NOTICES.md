@@ -14,7 +14,7 @@ Copyright in the Flash client, its artwork, sounds and text remains with the ori
 
 ## What is committed here
 
-- Original code written for this consolidation: `admin/cli.js`, `glue/*`, `scripts/*`, `tests/*`, `docs/*`, `README.md`, `GLOSSARY.md`.
+- Original code written for this consolidation: `admin/cli.js`, `glue/*` (protocol bridge, session token and admin server modules), `scripts/*`, `tests/*`, `docs/*`, `README.md`, `GLOSSARY.md`.
 - Patches against the pinned upstream commits: `patches/*.patch`.
 - Deployment and CI configuration: `.github/`, `terraform/`, `docker/`, `docker-compose.yml`, `.env.example`, `.dockerignore`, `.gitignore`.
 - The repository's MIT `LICENSE` applies only to the original work in this repository, not to the vendored upstream assets.
@@ -33,4 +33,4 @@ cd Ekoloko-The-offical-Game
 ./scripts/bootstrap.sh
 ```
 
-`bootstrap.sh` fetches both pinned upstreams, applies `patches/server-database-layer.patch` and `patches/desktop-local-target.patch`, then copies `glue/SessionToken.ts` and `glue/ProtocolBridge.ts` into the fetched server tree. Icons for a public release must be remade as original artwork before any vendored asset is published; see the wayfinder ticket "Establish license notices, original icons and safe public-repo content".
+`bootstrap.sh` fetches both pinned upstreams, applies `patches/server-database-layer.patch` and `patches/desktop-local-target.patch`, then copies `glue/SessionToken.ts`, `glue/ProtocolBridge.ts` and `glue/admin/*.ts` into the fetched server tree. Icons for a public release must be remade as original artwork before any vendored asset is published; see the wayfinder ticket "Establish license notices, original icons and safe public-repo content".

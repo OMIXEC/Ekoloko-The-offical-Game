@@ -36,10 +36,11 @@ clone_or_update "$ROOT/backend" "$SERVER_REPO" "$SERVER_SHA"
 clone_or_update "$ROOT/desktop" "$DESKTOP_REPO" "$DESKTOP_SHA"
 
 # Our own protocol glue lives in the public repo, not in the vendored snapshot.
-echo "==> installing local protocol glue"
-mkdir -p "$ROOT/backend/server/src/http" "$ROOT/backend/server/src/protocol"
+echo "==> installing local protocol and admin glue"
+mkdir -p "$ROOT/backend/server/src/http" "$ROOT/backend/server/src/protocol" "$ROOT/backend/server/src/admin"
 cp "$ROOT/glue/SessionToken.ts" "$ROOT/backend/server/src/http/SessionToken.ts"
 cp "$ROOT/glue/ProtocolBridge.ts" "$ROOT/backend/server/src/protocol/ProtocolBridge.ts"
+cp "$ROOT/glue/admin/"*.ts "$ROOT/backend/server/src/admin/"
 
 echo "==> installing dependencies"
 (cd "$ROOT/backend/server" && "$NPM_BIN" ci --no-audit --no-fund)
